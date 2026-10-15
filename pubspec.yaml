@@ -1,7 +1,7 @@
 ﻿name: ble_nfc_wlc_ios
 description: iOS-only Flutter port of the BLE/NFC/WLC diagnostic application.
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.1.0+2
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
