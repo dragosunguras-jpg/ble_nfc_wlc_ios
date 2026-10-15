@@ -1236,8 +1236,141 @@ void _txt(Canvas c,String t,Offset o,Color col){final tp=TextPainter(text:TextSp
 class PtxScreen extends StatefulWidget {final BleController c;const PtxScreen({super.key,required this.c});@override State<PtxScreen> createState()=>_PtxScreenState();}
 class _PtxScreenState extends State<PtxScreen>{int tab=0;int lastCard=0;@override Widget build(BuildContext context){final c=widget.c;return Column(children:[_tabs(['Card reader','Polling','PSL'],tab,(v)=>setState(()=>tab=v)),const SizedBox(height:8),Expanded(child:switch(tab){0=>CardReaderScreen(c:c),1=>PollingScreen(c:c),_=>PslScreen(c:c)})]);}}
 
-class CardReaderScreen extends StatelessWidget {final BleController c;const CardReaderScreen({super.key,required this.c});@override Widget build(BuildContext context){final card=c.card,detected=card?.present==true;return Stack(children:[Center(child:CustomPaint(size:const Size(290,290),painter:NfcLogoPainter(detected?riseColor.withOpacity(.5):Colors.black.withOpacity(.08)))),Column(crossAxisAlignment:CrossAxisAlignment.start,children:[if(!c.cardService)const Text('The connected firmware has no Card Reader service.')else ...[Text(detected?'Card detected':'Waiting for a card…',style:TextStyle(fontSize:22,color:detected?riseColor:Theme.of(context).colorScheme.onSurface)),const SizedBox(height:10),if(detected&&card!=null)...[_detail('Technology',techName(card.tech)),_detail('Protocol',protocolName(card.protocol)),_detail(idLabel(card.tech),card.idHex.isEmpty?'-':card.idHex),if(card.tech==0)_detail('SAK','0x${card.sak.toRadixString(16).padLeft(2,'0').toUpperCase()}')],const Divider(),const Text('Data exchange'),Expanded(child:c.exchanges.isEmpty?const Padding(padding:EdgeInsets.only(top:8),child:Text('Nothing exchanged yet.',style:TextStyle(fontSize:12,color:Color(0xFF65728A)))):ListView.separated(itemCount:c.exchanges.length,separatorBuilder:(_,__)=>const Divider(height:1),itemBuilder:(_,i){final ex=c.exchanges[i];final title=switch(ex.kind){1=>'NDEF message read',2=>'NDEF read – unlock code matched, lock toggled',3=>'Data exchange failed',4=>'Card protocol has no data exchange',_=>'Unknown event (${ex.kind})'};final time='${ex.time.hour.toString().padLeft(2,'0')}:${ex.time.minute.toString().padLeft(2,'0')}:${ex.time.second.toString().padLeft(2,'0')}';return Padding(padding:const EdgeInsets.symmetric(vertical:6),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text('$time  $title',style:TextStyle(fontSize:12,color:ex.kind==2?riseColor:ex.kind==3?fallColor:const Color(0xFF65728A))),if(ex.kind==1||ex.kind==2)Text(describeNdef(ex.data),style:const TextStyle(fontSize:13)),if(ex.data.isNotEmpty)Text('${ex.data.length} bytes: ${hexBytes(ex.data)}${ex.data.length>=128?'  (cut at 128 bytes)':''}',style:const TextStyle(fontSize:11,color:Color(0xFF65728A)))]));}))]]])]);}}
-class NfcLogoPainter extends CustomPainter{final Color color;NfcLogoPainter(this.color);@override void paint(Canvas c,Size s){final p=Paint()..color=color..style=PaintingStyle.stroke..strokeWidth=s.width*.055..strokeCap=StrokeCap.round..strokeJoin=StrokeJoin.round;final r=RRect.fromRectAndRadius(Rect.fromLTWH(s.width*.12,s.height*.16,s.width*.62,s.height*.68),Radius.circular(s.width*.13));c.drawRRect(r,p);final n=Path()..moveTo(s.width*.30,s.height*.62)..lineTo(s.width*.30,s.height*.36)..lineTo(s.width*.58,s.height*.62)..lineTo(s.width*.58,s.height*.36);c.drawPath(n,p);for(var i=0;i<2;i++){final rr=Rect.fromCenter(center:Offset(s.width*.72,s.height*.50),width:s.width*(.25+i*.16),height:s.height*(.35+i*.18));c.drawArc(rr,-.8,1.6,false,p);}}@override bool shouldRepaint(covariant NfcLogoPainter o)=>o.color!=color;}
+class CardReaderScreen extends StatelessWidget {
+  final BleController c;
+
+  const CardReaderScreen({
+    super.key,
+    required this.c,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final card = c.card;
+    final detected = card?.present == true;
+
+    return Stack(
+      children: [
+        Center(
+          child: CustomPaint(
+            size: const Size(290, 290),
+            painter: NfcLogoPainter(
+              detected
+                  ? riseColor.withOpacity(.5)
+                  : Colors.black.withOpacity(.08),
+            ),
+          ),
+        ),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (!c.cardService)
+              const Text(
+                'The connected firmware has no Card Reader service.',
+              )
+            else ...[
+              Text(
+                detected ? 'Card detected' : 'Waiting for a card…',
+                style: TextStyle(
+                  fontSize: 22,
+                  color: detected
+                      ? riseColor
+                      : Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 10),
+              if (detected && card != null) ...[
+                _detail('Technology', techName(card.tech)),
+                _detail('Protocol', protocolName(card.protocol)),
+                _detail(
+                  idLabel(card.tech),
+                  card.idHex.isEmpty ? '-' : card.idHex,
+                ),
+                if (card.tech == 0)
+                  _detail(
+                    'SAK',
+                    '0x${card.sak.toRadixString(16).padLeft(2, '0').toUpperCase()}',
+                  ),
+              ],
+              const Divider(),
+              const Text('Data exchange'),
+              Expanded(
+                child: c.exchanges.isEmpty
+                    ? const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: Text(
+                          'Nothing exchanged yet.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF65728A),
+                          ),
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: c.exchanges.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (_, i) {
+                          final ex = c.exchanges[i];
+
+                          final title = switch (ex.kind) {
+                            1 => 'NDEF message read',
+                            2 => 'NDEF read – unlock code matched, lock toggled',
+                            3 => 'Data exchange failed',
+                            4 => 'Card protocol has no data exchange',
+                            _ => 'Unknown event (${ex.kind})',
+                          };
+
+                          final time =
+                              '${ex.time.hour.toString().padLeft(2, '0')}:'
+                              '${ex.time.minute.toString().padLeft(2, '0')}:'
+                              '${ex.time.second.toString().padLeft(2, '0')}';
+
+                          final truncated =
+                              ex.data.length >= 128 ? '  (cut at 128 bytes)' : '';
+
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '$time  $title',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: ex.kind == 2
+                                        ? riseColor
+                                        : ex.kind == 3
+                                            ? fallColor
+                                            : const Color(0xFF65728A),
+                                  ),
+                                ),
+                                if (ex.kind == 1 || ex.kind == 2)
+                                  Text(
+                                    describeNdef(ex.data),
+                                    style: const TextStyle(fontSize: 13),
+                                  ),
+                                if (ex.data.isNotEmpty)
+                                  Text(
+                                    '${ex.data.length} bytes: '
+                                    '${hexBytes(ex.data)}$truncated',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Color(0xFF65728A),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+}
 
 class PollingScreen extends StatefulWidget {final BleController c;const PollingScreen({super.key,required this.c});@override State<PollingScreen> createState()=>_PollingScreenState();}
 class _PollingScreenState extends State<PollingScreen>{
