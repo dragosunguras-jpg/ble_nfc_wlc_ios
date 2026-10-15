@@ -1100,7 +1100,7 @@ class _BleRootPageState extends State<BleRootPage> {
         bottom: PreferredSize(preferredSize: const Size.fromHeight(1), child: Divider(height: 1, color: Theme.of(context).colorScheme.outlineVariant)),
       ),
       bottomNavigationBar: SafeArea(top: false, child: InkWell(onTap: connected ? () => setState(() => screen = AppScreen.overview) : null, child: const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: RenesasLogo()))),
-      body: Stack(children: [
+      body: Stack(fit: StackFit.expand, children: [
         Padding(padding: const EdgeInsets.all(16), child: _body()),
         if (toast != null) Positioned(top: 12, left: 16, right: 16, child: EventToast(event: toast!, onTap: () => _go(screenForArea(toast!.area)))),
       ]),
