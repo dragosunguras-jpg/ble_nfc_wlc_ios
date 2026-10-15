@@ -1099,7 +1099,16 @@ class _BleRootPageState extends State<BleRootPage> {
         actions: connected ? [Padding(padding: const EdgeInsets.only(right: 12), child: OutlinedButton(onPressed: c.disconnect, child: const Text('Disconnect')))] : null,
         bottom: PreferredSize(preferredSize: const Size.fromHeight(1), child: Divider(height: 1, color: Theme.of(context).colorScheme.outlineVariant)),
       ),
-      bottomNavigationBar: SafeArea(top: false, child: InkWell(onTap: connected ? () => setState(() => screen = AppScreen.overview) : null, child: const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: RenesasLogo()))),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 48,
+          child: InkWell(
+            onTap: connected ? () => setState(() => screen = AppScreen.overview) : null,
+            child: const Center(child: RenesasLogo()),
+          ),
+        ),
+      ),
       body: Stack(fit: StackFit.expand, children: [
         Padding(padding: const EdgeInsets.all(16), child: _body()),
         if (toast != null) Positioned(top: 12, left: 16, right: 16, child: EventToast(event: toast!, onTap: () => _go(screenForArea(toast!.area)))),
@@ -1132,7 +1141,17 @@ class _BleRootPageState extends State<BleRootPage> {
 
 class RenesasLogo extends StatelessWidget {
   const RenesasLogo({super.key});
-  @override Widget build(BuildContext context) => const Center(child: Text('RENESAS', style: TextStyle(color: renesasBlue, fontWeight: FontWeight.w900, fontSize: 18, letterSpacing: 1.8)));
+
+  @override
+  Widget build(BuildContext context) => const Text(
+        'RENESAS',
+        style: TextStyle(
+          color: renesasBlue,
+          fontWeight: FontWeight.w900,
+          fontSize: 18,
+          letterSpacing: 1.8,
+        ),
+      );
 }
 
 class BatteryIndicator extends StatelessWidget {
