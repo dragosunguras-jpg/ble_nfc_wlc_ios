@@ -1160,7 +1160,7 @@ class EventToast extends StatelessWidget {
   final LogEvent event; final VoidCallback onTap;
   const EventToast({super.key, required this.event, required this.onTap});
   Color get dot => switch(event.kind) {LogKind.info => Colors.blueGrey.shade200, LogKind.ok => Colors.greenAccent.shade200, LogKind.warn => Colors.orange.shade300, LogKind.error => Colors.red.shade300};
-  @override Widget build(BuildContext context) => Material(elevation: 6, color: Theme.of(context).colorScheme.inverseSurface, borderRadius: BorderRadius.circular(24), child: InkWell(borderRadius: BorderRadius.circular(24), onTap: onTap, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10), child: Row(mainAxisSize: MainAxisSize.min, children: [Container(width: 8, height: 8, decoration: BoxDecoration(color: dot, shape: BoxShape.circle)), const SizedBox(width: 8), Expanded(child: Text(event.text, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: Theme.of(context).colorScheme.inverseOnSurface, fontSize: 13))), const SizedBox(width: 10), Text(screenTitle(screenForArea(event.area)), style: TextStyle(color: Colors.blueGrey.shade200, fontSize: 11))]))));
+  @override Widget build(BuildContext context) => Material(elevation: 6, color: Theme.of(context).colorScheme.inverseSurface, borderRadius: BorderRadius.circular(24), child: InkWell(borderRadius: BorderRadius.circular(24), onTap: onTap, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10), child: Row(mainAxisSize: MainAxisSize.min, children: [Container(width: 8, height: 8, decoration: BoxDecoration(color: dot, shape: BoxShape.circle)), const SizedBox(width: 8), Expanded(child: Text(event.text, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: Theme.of(context).colorScheme.onInverseSurface, fontSize: 13))), const SizedBox(width: 10), Text(screenTitle(screenForArea(event.area)), style: TextStyle(color: Colors.blueGrey.shade200, fontSize: 11))]))));
 }
 
 // =============================================================================
@@ -1235,6 +1235,61 @@ void _txt(Canvas c,String t,Offset o,Color col){final tp=TextPainter(text:TextSp
 
 class PtxScreen extends StatefulWidget {final BleController c;const PtxScreen({super.key,required this.c});@override State<PtxScreen> createState()=>_PtxScreenState();}
 class _PtxScreenState extends State<PtxScreen>{int tab=0;int lastCard=0;@override Widget build(BuildContext context){final c=widget.c;return Column(children:[_tabs(['Card reader','Polling','PSL'],tab,(v)=>setState(()=>tab=v)),const SizedBox(height:8),Expanded(child:switch(tab){0=>CardReaderScreen(c:c),1=>PollingScreen(c:c),_=>PslScreen(c:c)})]);}}
+
+
+class NfcLogoPainter extends CustomPainter {
+  final Color color;
+
+  const NfcLogoPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    final center = Offset(size.width / 2, size.height / 2);
+    final base = size.shortestSide;
+
+    // Four rounded "radio-wave" arcs inspired by the NFC Forum mark used
+    // by the Android reference UI. Kept vector-based so it scales cleanly
+    // on iPhone/iPad without an extra raster asset.
+    for (var i = 0; i < 4; i++) {
+      final inset = base * (0.12 + i * 0.09);
+      final rect = Rect.fromCenter(
+        center: center,
+        width: base - inset * 2,
+        height: base - inset * 2,
+      );
+      stroke.strokeWidth = base * (0.035 - i * 0.003);
+      canvas.drawArc(
+        rect,
+        -0.78,
+        1.56,
+        false,
+        stroke,
+      );
+      canvas.drawArc(
+        rect,
+        2.36,
+        1.56,
+        false,
+        stroke,
+      );
+    }
+
+    final dot = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, base * 0.035, dot);
+  }
+
+  @override
+  bool shouldRepaint(covariant NfcLogoPainter oldDelegate) =>
+      oldDelegate.color != color;
+}
 
 class CardReaderScreen extends StatelessWidget {
   final BleController c;
