@@ -1572,9 +1572,10 @@ class BatteryGraph extends StatefulWidget {
 
 class _BatteryGraphState extends State<BatteryGraph> {
   bool showBatt = true;
-  bool showVbat = true;
-  bool showVddc = true;
+  bool showVbat = false;
+  bool showVddc = false;
   bool showPower = false;
+  bool showCurrent = false;
   bool showPhases = true;
 
   @override
@@ -1704,10 +1705,16 @@ class _BatteryGraphState extends State<BatteryGraph> {
                 () => setState(() => showVddc = !showVddc),
               ),
               _seriesChip(
-                'Power [mW]',
+                'Charge power (est.) [mW]',
                 showPower,
                 const Color(0xFF00897B),
                 () => setState(() => showPower = !showPower),
+              ),
+              _seriesChip(
+                'Charge current (est.) [mA]',
+                showCurrent,
+                const Color(0xFF1E88E5),
+                () => setState(() => showCurrent = !showCurrent),
               ),
               Padding(
                 padding: const EdgeInsets.only(right: 8),
@@ -1772,6 +1779,15 @@ class _BatteryGraphState extends State<BatteryGraph> {
               samples: c.statusHistory,
               battery: c.batteryHistory,
               kind: 3,
+            ),
+          ),
+        if (showCurrent)
+          SizedBox(
+            height: 130,
+            child: SimpleHistoryChart(
+              samples: c.statusHistory,
+              battery: c.batteryHistory,
+              kind: 4,
             ),
           ),
         const Padding(
@@ -1851,9 +1867,265 @@ class _Legend extends StatelessWidget {
       );
 }
 
-class SimpleHistoryChart extends StatelessWidget {final List<StatusSample> samples;final List<BatterySample> battery;final int kind;const SimpleHistoryChart({super.key,required this.samples,required this.battery,required this.kind});@override Widget build(BuildContext context)=>CustomPaint(painter:_HistoryPainter(samples,battery,kind),child:Container());}
-class _HistoryPainter extends CustomPainter {final List<StatusSample>s;final List<BatterySample>b;final int kind;_HistoryPainter(this.s,this.b,this.kind);@override void paint(Canvas c,Size z){final grid=Paint()..color=const Color(0xFFD5DDE9)..strokeWidth=1;for(var i=0;i<=4;i++){final y=8+(z.height-24)*i/4;c.drawLine(Offset(42,y),Offset(z.width-8,y),grid);}for(var i=0;i<=4;i++){final x=42+(z.width-50)*i/4;c.drawLine(Offset(x,8),Offset(x,z.height-16),grid);}List<double> v=[];Color col;String label;if(kind==0){v=b.map((e)=>e.percent.toDouble()).toList();col=Colors.green;label='Battery';}else if(kind==1){v=s.map((e)=>e.status.vdBatMv/1000).toList();col=Colors.deepPurple;label='VDBAT';}else if(kind==2){v=s.map((e)=>e.status.vddcMv/1000).toList();col=Colors.deepOrange;label='VDDC';}else{v=s.map((e)=>(e.status.estPowerMw??0).toDouble()).toList();col=Colors.teal;label='Power';}if(v.isEmpty){_txt(c,'$label --',Offset(48,12),col);return;}double lo=kind==0?0:v.reduce(math.min),hi=kind==0?100:v.reduce(math.max);if((hi-lo).abs()<.01){lo-=.1;hi+=.1;}final path=Path();for(var i=0;i<v.length;i++){final x=42+(z.width-50)*(i/math.max(1,v.length-1));final y=8+(z.height-24)*(1-(v[i]-lo)/(hi-lo));if(i==0)path.moveTo(x,y);else path.lineTo(x,y);}c.drawPath(path,Paint()..color=col..style=PaintingStyle.stroke..strokeWidth=3..strokeCap=StrokeCap.round);final last=v.last;_txt(c,'$label ${kind==0?last.toStringAsFixed(0):last.toStringAsFixed(2)}${kind==0?' %':kind==3?' mW':' V'}',Offset(48,12),col);}
-void _txt(Canvas c,String t,Offset o,Color col){final tp=TextPainter(text:TextSpan(text:t,style:TextStyle(fontSize:12,color:col)),textDirection:TextDirection.ltr)..layout();tp.paint(c,o);} @override bool shouldRepaint(covariant _HistoryPainter o)=>true;}
+class SimpleHistoryChart extends StatelessWidget {
+  final List<StatusSample> samples;
+  final List<BatterySample> battery;
+  final int kind;
+
+  const SimpleHistoryChart({
+    super.key,
+    required this.samples,
+    required this.battery,
+    required this.kind,
+  });
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+        painter: _HistoryPainter(samples, battery, kind),
+        child: Container(),
+      );
+}
+
+class _HistoryPainter extends CustomPainter {
+  final List<StatusSample> s;
+  final List<BatterySample> b;
+  final int kind;
+
+  _HistoryPainter(this.s, this.b, this.kind);
+
+  double _niceStep(double raw) {
+    if (raw <= 0 || !raw.isFinite) return 1;
+    final e = (math.log(raw) / math.ln10).floorToDouble();
+    final pow = math.pow(10.0, e).toDouble();
+    final f = raw / pow;
+    final nf = f <= 1
+        ? 1.0
+        : f <= 2
+            ? 2.0
+            : f <= 2.5
+                ? 2.5
+                : f <= 5
+                    ? 5.0
+                    : 10.0;
+    return nf * pow;
+  }
+
+  @override
+  void paint(Canvas c, Size z) {
+    const left = 42.0;
+    const right = 8.0;
+    const headerH = 24.0;
+    const top = headerH + 6.0;
+    const bottom = 16.0;
+    final plotW = z.width - left - right;
+    final plotH = z.height - top - bottom;
+    if (plotW <= 0 || plotH <= 0) return;
+
+    late List<double> v;
+    late Color col;
+    late String label;
+    late String unit;
+    late int decimals;
+    late double minSpan;
+
+    if (kind == 0) {
+      v = b.map((e) => e.percent.toDouble()).toList();
+      col = const Color(0xFF388E3C);
+      label = 'Battery';
+      unit = '%';
+      decimals = 0;
+      minSpan = 10;
+    } else if (kind == 1) {
+      v = s.map((e) => e.status.vdBatMv / 1000.0).toList();
+      col = const Color(0xFF7E57C2);
+      label = 'VDBAT';
+      unit = 'V';
+      decimals = 2;
+      minSpan = 0.2;
+    } else if (kind == 2) {
+      v = s.map((e) => e.status.vddcMv / 1000.0).toList();
+      col = const Color(0xFFEF6C00);
+      label = 'VDDC';
+      unit = 'V';
+      decimals = 2;
+      minSpan = 0.5;
+    } else if (kind == 3) {
+      // Exact Android semantics: omit samples where estimated power is null.
+      v = s
+          .where((e) => e.status.estPowerMw != null)
+          .map((e) => e.status.estPowerMw!.toDouble())
+          .toList();
+      col = const Color(0xFF00897B);
+      label = 'Charge power (est.)';
+      unit = 'mW';
+      decimals = 0;
+      minSpan = 50;
+    } else {
+      // Exact Android semantics: omit samples where estimated current is null.
+      v = s
+          .where((e) => e.status.estCurrentMa != null)
+          .map((e) => e.status.estCurrentMa!.toDouble())
+          .toList();
+      col = const Color(0xFF1E88E5);
+      label = 'Charge current (est.)';
+      unit = 'mA';
+      decimals = 0;
+      minSpan = 20;
+    }
+
+    final grid = Paint()
+      ..color = const Color(0xFFD5DDE9)
+      ..strokeWidth = 1;
+
+    // Android BatteryGraph uses fixed 0..100 for Battery and dynamic padded
+    // "nice" ranges for every other series.
+    double lo;
+    double hi;
+    double step;
+
+    if (kind == 0) {
+      lo = 0;
+      hi = 100;
+      step = 25;
+    } else if (v.isEmpty) {
+      lo = 0;
+      hi = 1;
+      step = .25;
+    } else {
+      var mn = v.reduce(math.min);
+      var mx = v.reduce(math.max);
+
+      if (mx - mn < minSpan) {
+        final center = (mx + mn) / 2;
+        mn = center - minSpan / 2;
+        mx = center + minSpan / 2;
+      }
+
+      final pad = (mx - mn) * .1;
+      final nonNegative = v.reduce(math.min) >= 0;
+      step = _niceStep((mx - mn + 2 * pad) / 4);
+      lo = ((mn - pad) / step).floor() * step;
+      if (nonNegative && lo < 0) lo = 0;
+      hi = ((mx + pad) / step).ceil() * step;
+
+      if (hi <= lo) hi = lo + math.max(step, 1);
+    }
+
+    final range = hi - lo;
+
+    double yOf(double value) =>
+        top + plotH * (1 - ((value - lo) / range).clamp(0.0, 1.0));
+
+    // Horizontal grid with Android-style dynamic Y labels.
+    final n = ((hi - lo) / step).round().clamp(1, 100);
+    final stride = math.max(1, (18 / (plotH / n)).ceil());
+    for (var k = 0; k <= n; k += stride) {
+      final value = lo + k * step;
+      final y = yOf(value);
+      c.drawLine(Offset(left, y), Offset(left + plotW, y), grid);
+      _txt(
+        c,
+        value.toStringAsFixed(decimals),
+        Offset(2, y - 6),
+        const Color(0xFF65728A),
+        9,
+      );
+    }
+
+    // Four vertical divisions, matching Android's pane grid.
+    for (var i = 0; i <= 4; i++) {
+      final x = left + plotW * i / 4;
+      c.drawLine(Offset(x, top), Offset(x, top + plotH), grid);
+    }
+
+    final lastText = v.isEmpty
+        ? 'no data'
+        : '${v.last.toStringAsFixed(decimals)} $unit';
+    // Dedicated header area above the plot. This prevents the graph line
+    // from ever overlapping text such as "Battery 86%".
+    c.drawRect(
+      Rect.fromLTWH(left, 0, plotW, headerH),
+      Paint()..color = const Color(0xFFF0F4FC),
+    );
+    _txt(
+      c,
+      '$label  $lastText',
+      const Offset(left + 6, 5),
+      col,
+      11,
+    );
+
+    if (v.isEmpty) return;
+
+    final path = Path();
+    for (var i = 0; i < v.length; i++) {
+      final x = left + plotW * (i / math.max(1, v.length - 1));
+      final y = yOf(v[i]);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+
+    // Same visual intent as Android: tinted area + line.
+    final area = Path.from(path)
+      ..lineTo(left + plotW, top + plotH)
+      ..lineTo(left, top + plotH)
+      ..close();
+
+    c.drawPath(
+      area,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            col.withOpacity(.20),
+            col.withOpacity(0),
+          ],
+        ).createShader(Rect.fromLTWH(left, top, plotW, plotH)),
+    );
+
+    c.drawPath(
+      path,
+      Paint()
+        ..color = col
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+
+    final lastX = left + plotW;
+    final lastY = yOf(v.last);
+    c.drawCircle(
+      Offset(lastX, lastY),
+      5,
+      Paint()..color = col,
+    );
+  }
+
+  void _txt(
+    Canvas c,
+    String text,
+    Offset offset,
+    Color color,
+    double fontSize,
+  ) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(fontSize: fontSize, color: color),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(c, offset);
+  }
+
+  @override
+  bool shouldRepaint(covariant _HistoryPainter oldDelegate) => true;
+}
 
 // =============================================================================
 // PTX205R - card reader / polling / PSL
