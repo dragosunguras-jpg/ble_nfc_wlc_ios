@@ -1459,20 +1459,26 @@ class OverviewScreen extends StatelessWidget {
 
 enum BoardPart { wlc, nfc, mcu }
 class Board3D extends StatelessWidget {
-  final bool wlcActive, cardActive; final ValueChanged<BoardPart> onPart;
-  const Board3D({super.key, required this.wlcActive, required this.cardActive, required this.onPart});
-  @override Widget build(BuildContext context) => LayoutBuilder(builder: (context, box) {
-    return Stack(fit: StackFit.expand, children: [
-      Container(color: const Color(0xFFF0F4FC)),
-      Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 20), child: Image.asset('assets/board3d_preview.png', fit: BoxFit.contain)),
-      // State highlights + same labels as the Android renderer.
-      Positioned(left: box.maxWidth*.16, top: box.maxHeight*.36, width: box.maxWidth*.27, height: box.maxHeight*.18, child: GestureDetector(onTap: () => onPart(BoardPart.wlc), child: AnimatedContainer(duration: const Duration(milliseconds: 250), decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), color: wlcActive ? const Color(0x5535E06F) : Colors.transparent, boxShadow: wlcActive ? const [BoxShadow(color: Color(0x8835E06F), blurRadius: 18)] : []), child: const Center(child: _BoardLabel('WLC antenna'))))),
-      Positioned(left: box.maxWidth*.45, top: box.maxHeight*.40, width: box.maxWidth*.38, height: box.maxHeight*.22, child: GestureDetector(onTap: () => onPart(BoardPart.nfc), child: AnimatedContainer(duration: const Duration(milliseconds: 250), decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), color: cardActive ? const Color(0x4435E06F) : Colors.transparent), child: const Center(child: _BoardLabel('NFC reader (PTX205R)'))))),
-      Positioned(left: box.maxWidth*.50, top: box.maxHeight*.62, width: box.maxWidth*.26, height: box.maxHeight*.10, child: GestureDetector(onTap: () => onPart(BoardPart.mcu), child: const Center(child: _BoardLabel('RA6B1')))),
-    ]);
+  final bool wlcActive, cardActive;
+  final ValueChanged<BoardPart> onPart;
+
+  const Board3D({
+    super.key,
+    required this.wlcActive,
+    required this.cardActive,
+    required this.onPart,
   });
+
+  @override
+  Widget build(BuildContext context) => Container(
+        color: const Color(0xFFF0F4FC),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 20),
+        child: Image.asset(
+          'assets/board3d_preview.png',
+          fit: BoxFit.contain,
+        ),
+      );
 }
-class _BoardLabel extends StatelessWidget { final String s; const _BoardLabel(this.s); @override Widget build(BuildContext context) => Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2), color: Colors.black38, child: Text(s, style: const TextStyle(color: Colors.white, fontSize: 12))); }
 
 class EventTerminal extends StatelessWidget {
   final List<LogEvent> events; final VoidCallback onClear;
