@@ -1,7 +1,7 @@
 name: ble_nfc_wlc_ios
 description: iOS companion application for the BLE + NFC + WLC demo board.
 publish_to: 'none'
-version: 0.1.0+6
+version: 0.1.0+7
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
