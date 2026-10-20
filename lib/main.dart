@@ -903,8 +903,16 @@ class BleController extends ChangeNotifier {
       pslService = _findChar(AppUuids.pslService, AppUuids.pslStatus) != null;
       if (pslService) {
         _subscribe(AppUuids.pslService, AppUuids.pslStatus, _handlePslStatusBytes);
-        _subscribe(AppUuids.pslService, AppUuids.pslResult, (b) { qResult = QResult.parse(b); _emit(); });
-        _subscribe(AppUuids.pslService, AppUuids.pslTrace, _handlePslTrace);
+        _subscribe(
+          AppUuids.pslService,
+          AppUuids.pslResult,
+          _handlePslResult,
+        );
+        _subscribe(
+          AppUuids.pslService,
+          AppUuids.pslTrace,
+          _handlePslTrace,
+        );
         final ps = await _read(AppUuids.pslService, AppUuids.pslStatus, tries: 2);
         if (ps != null) _handlePslStatusBytes(ps);
       }
@@ -1189,6 +1197,12 @@ class BleController extends ChangeNotifier {
     _emit();
   }
 
+  void _handlePslResult(List<int> b) {
+    if (b.length < 18) return;
+    qResult = QResult.parse(b);
+    _emit();
+  }
+
   void _handlePslTrace(List<int> b) {
     if (b.length < 6 || qRunParams == null) return;
     final first = u16(b, 2);
@@ -1458,6 +1472,7 @@ class OverviewScreen extends StatelessWidget {
 }
 
 enum BoardPart { wlc, nfc, mcu }
+
 class Board3D extends StatelessWidget {
   final bool wlcActive, cardActive;
   final ValueChanged<BoardPart> onPart;
@@ -1470,12 +1485,55 @@ class Board3D extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) => Container(
-        color: const Color(0xFFF0F4FC),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 20),
-        child: Image.asset(
-          'assets/board3d_preview.png',
-          fit: BoxFit.contain,
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, box) => Stack(
+          fit: StackFit.expand,
+          children: [
+            Container(color: const Color(0xFFF0F4FC)),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 20),
+              child: Image.asset(
+                'assets/board3d_preview.png',
+                fit: BoxFit.contain,
+              ),
+            ),
+
+            // Invisible hit targets only. The labels/highlights are already
+            // baked into board3d_preview.png, so nothing is drawn here.
+            Positioned(
+              left: box.maxWidth * .15,
+              top: box.maxHeight * .34,
+              width: box.maxWidth * .30,
+              height: box.maxHeight * .24,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: () => onPart(BoardPart.wlc),
+                child: const SizedBox.expand(),
+              ),
+            ),
+            Positioned(
+              left: box.maxWidth * .43,
+              top: box.maxHeight * .37,
+              width: box.maxWidth * .42,
+              height: box.maxHeight * .29,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: () => onPart(BoardPart.nfc),
+                child: const SizedBox.expand(),
+              ),
+            ),
+            Positioned(
+              left: box.maxWidth * .48,
+              top: box.maxHeight * .58,
+              width: box.maxWidth * .28,
+              height: box.maxHeight * .15,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: () => onPart(BoardPart.mcu),
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ],
         ),
       );
 }
@@ -2005,13 +2063,502 @@ class _PollingScreenState extends State<PollingScreen>{
   Widget _miniDrop(String label,int v,Map<int,String> m,bool en,ValueChanged<int> cb)=>Column(children:[Text(label,style:const TextStyle(fontSize:9,color:Color(0xFF65728A))),DropdownButton<int>(value:m.containsKey(v)?v:m.keys.first,onChanged:en?(x){if(x!=null)cb(x);}:null,items:[for(final e in m.entries)DropdownMenuItem(value:e.key,child:Text(e.value,style:const TextStyle(fontSize:11)))])]);
 }
 
-class PslScreen extends StatefulWidget {final BleController c;const PslScreen({super.key,required this.c});@override State<PslScreen> createState()=>_PslScreenState();}
-class _PslScreenState extends State<PslScreen>{@override Widget build(BuildContext context){final c=widget.c,p=c.qParams,st=c.pslStatus,running=(st?.state??0)!=0,measuring=st?.state==1;return ListView(children:[const Text('Antenna Q measurement',style:TextStyle(fontSize:20,fontWeight:FontWeight.bold)),const SizedBox(height:12),Row(children:[FilledButton(onPressed:!running&&p.valid?c.startQ:null,child:const Text('Start')),const SizedBox(width:8),OutlinedButton(onPressed:running?c.stopQ:null,child:const Text('Stop')),const Spacer(),Checkbox(value:c.qKeep,onChanged:(v)=>c.setQKeep(v??false)),const Text('Keep trace'),const SizedBox(width:8),OutlinedButton(onPressed:c.clearQ,child:const Text('Clear'))]),const SizedBox(height:10),Wrap(spacing:8,children:[_qPick('Span',p.spanKhz,[400,800,1200,1600,2000,2400],running,(v){p.spanKhz=v;c.setQParams(p);}),_qPick('Step',p.stepKhz,[1,2,5,10,20,25,50,100],running,(v){p.stepKhz=v;c.setQParams(p);}),_qPick('Average',p.avgIndex,List.generate(7,(i)=>i),running,(v){p.avgIndex=v;c.setQParams(p);},display:(v)=>['1 sample','2 samples','4 samples','8 samples','16 samples','32 samples','64 samples'][v])]),SwitchListTile(value:p.continuous,onChanged:running?null:(v){p.continuous=v;c.setQParams(p);},title:const Text('Continuous (repeat the sweep until Stop)',style:TextStyle(fontSize:13)),contentPadding:EdgeInsets.zero),if(!p.valid)Text('Span / step gives ${p.points} points; at most 1000 are possible.',style:const TextStyle(fontSize:11,color:fallColor)),Text(switch(st?.state){1=>'Measuring · sweep ${(st?.sweeps??0)+1}',2=>'Restarting the reader…',_=>'Reader running'},style:TextStyle(fontSize:13,color:measuring?traceColor:const Color(0xFF65728A))),if(measuring)LinearProgressIndicator(value:((c.qTrace?.amps.length??0)/(c.qRunParams?.points??1)).clamp(0,1).toDouble(),color:traceColor),if(c.qMessage!=null)Padding(padding:const EdgeInsets.symmetric(vertical:6),child:Text(c.qMessage!,style:const TextStyle(fontSize:11,color:Color(0xFF65728A)))),if(st!=null&&st.error!=0)Text('Last error 0x${st.error.toRadixString(16).padLeft(4,'0')} (ADC clipping: lower the amplitude / check the antenna)',style:const TextStyle(fontSize:11,color:fallColor)),SizedBox(height:300,child:CustomPaint(painter:QChartPainter(c.qKept+[if(c.qTrace!=null)c.qTrace!],c.qResult,c.qRunParams??c.qParams))),const SizedBox(height:8),Row(children:[Expanded(child:Column(children:[_detail('Center',c.qResult==null?'-':_mhz(c.qResult!.resHz)),_detail('Upper corner',c.qResult==null?'-':_mhz(c.qResult!.upHz))])),Expanded(child:Column(children:[_detail('Lower corner',c.qResult==null?'-':_mhz(c.qResult!.lowHz)),_detail('Q-factor',c.qResult==null?'-':c.qResult!.q.toStringAsFixed(2))]))]),const SizedBox(height:8),const Text('Starting a measurement stops the card reader and switches its RF field off. When you stop it, the field is switched off again and the reader restarts automatically.',style:TextStyle(fontSize:10,color:Color(0xFF65728A)))]);}
-  Widget _qPick(String label,int value,List<int> values,bool running,ValueChanged<int> cb,{String Function(int)? display})=>Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text(label,style:const TextStyle(fontSize:10,color:Color(0xFF65728A))),DropdownButton<int>(value:values.contains(value)?value:values.first,onChanged:running?null:(v){if(v!=null)cb(v);},items:[for(final v in values)DropdownMenuItem(value:v,child:Text(display?.call(v)??'$v kHz',style:const TextStyle(fontSize:12)))])]);
-  String _mhz(int hz)=>hz==0?'-':'${(hz/1e6).toStringAsFixed(3)} MHz';
+class PslScreen extends StatefulWidget {
+  final BleController c;
+  const PslScreen({super.key, required this.c});
+
+  @override
+  State<PslScreen> createState() => _PslScreenState();
 }
-class QChartPainter extends CustomPainter{final List<QTrace>traces;final QResult?result;final QParams p;QChartPainter(this.traces,this.result,this.p);double db(int a)=>20*math.log(math.max(a,1)/1000)/math.ln10;@override void paint(Canvas c,Size s){final left=42.0,top=16.0,right=8.0,bottom=28.0,w=s.width-left-right,h=s.height-top-bottom;if(w<=0||h<=0)return;final vals=traces.expand((t)=>t.amps).map(db).toList();double lo=vals.isEmpty?-40:vals.reduce(math.min)-1,hi=vals.isEmpty?-10:vals.reduce(math.max)+1;if(hi-lo<10)lo=hi-10;double xOf(double hz)=>left+w*(hz-p.startHz)/(p.spanKhz*1000);double yOf(double d)=>top+h*(1-(d-lo)/(hi-lo));final gp=Paint()..color=const Color(0xFFD7DFEA)..strokeWidth=1;for(var i=0;i<=5;i++){final y=top+h*i/5;c.drawLine(Offset(left,y),Offset(left+w,y),gp);final v=hi-(hi-lo)*i/5;_paintText(c,v.toStringAsFixed(0),Offset(8,y-7),const Color(0xFF65728A),10);}for(var i=0;i<=4;i++){final x=left+w*i/4;c.drawLine(Offset(x,top),Offset(x,top+h),gp);}for(var ti=0;ti<traces.length;ti++){final t=traces[ti];if(t.amps.length<2)continue;final path=Path();for(var i=0;i<t.amps.length;i++){final x=xOf(t.startHz+i*t.stepHz.toDouble()),y=yOf(db(t.amps[i]));if(i==0)path.moveTo(x,y);else path.lineTo(x,y);}c.drawPath(path,Paint()..color=traceColor.withOpacity(ti==traces.length-1?1:.3)..style=PaintingStyle.stroke..strokeWidth=ti==traces.length-1?2.5:1.3);}final r=result,cur=traces.isEmpty?null:traces.last;if(r!=null&&cur!=null){for(final m in [(r.lowHz,'Lower'),(r.resHz,'Center'),(r.upHz,'Upper')]){final hz=m.$1;if(hz==0)continue;final x=xOf(hz.toDouble());c.drawLine(Offset(x,top),Offset(x,top+h),Paint()..color=markColor.withOpacity(.45)..strokeWidth=1);final idx=((hz-cur.startHz)/cur.stepHz).round();if(idx>=0&&idx<cur.amps.length)c.drawCircle(Offset(x,yOf(db(cur.amps[idx]))),5,Paint()..color=markColor);_paintText(c,'${m.$2} ${(hz/1e6).toStringAsFixed(3)}',Offset((x-30).clamp(left,left+w-70),top+(m.$2=='Center'?0:m.$2=='Lower'?15:30)),traceColor,9);}}if(traces.isEmpty)_paintText(c,'press Start to measure',Offset(left+w/2-60,top+h/2),const Color(0xFF65728A),12);}
-void _paintText(Canvas c,String t,Offset o,Color col,double fs){final tp=TextPainter(text:TextSpan(text:t,style:TextStyle(fontSize:fs,color:col)),textDirection:TextDirection.ltr)..layout();tp.paint(c,o);}@override bool shouldRepaint(covariant QChartPainter o)=>true;}
+
+class _PslScreenState extends State<PslScreen> {
+  static const spans = [1000, 1600, 2000, 3000, 4000, 5000];
+  static const steps = [1, 2, 5, 10, 20];
+  static const avgs = [
+    '1 sample',
+    '2 samples',
+    '4 samples',
+    '8 samples',
+    '16 samples',
+    '32 samples',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.c;
+    if (!c.pslService) {
+      return const Text(
+        'The connected firmware has no PSL service.',
+        style: TextStyle(fontSize: 13),
+      );
+    }
+
+    final p = c.qParams;
+    final st = c.pslStatus;
+    final running = (st?.state ?? 0) != 0;
+    final measuring = st?.state == 1;
+
+    return ListView(
+      children: [
+        const Text(
+          'Antenna Q measurement',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 8),
+
+        Row(
+          children: [
+            FilledButton(
+              onPressed: !running && p.valid ? c.startQ : null,
+              child: const Text('Start', style: TextStyle(fontSize: 13)),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: running ? c.stopQ : null,
+              child: const Text('Stop', style: TextStyle(fontSize: 13)),
+            ),
+            const Spacer(),
+            Checkbox(
+              value: c.qKeep,
+              onChanged: (v) => c.setQKeep(v ?? false),
+            ),
+            const Text('Keep trace', style: TextStyle(fontSize: 12)),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: c.clearQ,
+              child: const Text('Clear', style: TextStyle(fontSize: 12)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            _qPick(
+              'Span',
+              p.spanKhz,
+              spans,
+              running,
+              (v) => c.setQParams(
+                QParams(
+                  spanKhz: v,
+                  stepKhz: p.stepKhz,
+                  avgIndex: p.avgIndex,
+                  continuous: p.continuous,
+                ),
+              ),
+            ),
+            _qPick(
+              'Step',
+              p.stepKhz,
+              steps,
+              running,
+              (v) => c.setQParams(
+                QParams(
+                  spanKhz: p.spanKhz,
+                  stepKhz: v,
+                  avgIndex: p.avgIndex,
+                  continuous: p.continuous,
+                ),
+              ),
+            ),
+            _qPick(
+              'Average',
+              p.avgIndex,
+              List.generate(avgs.length, (i) => i),
+              running,
+              (v) => c.setQParams(
+                QParams(
+                  spanKhz: p.spanKhz,
+                  stepKhz: p.stepKhz,
+                  avgIndex: v,
+                  continuous: p.continuous,
+                ),
+              ),
+              display: (v) => avgs[v],
+            ),
+          ],
+        ),
+
+        SwitchListTile(
+          value: p.continuous,
+          onChanged: running
+              ? null
+              : (v) => c.setQParams(
+                    QParams(
+                      spanKhz: p.spanKhz,
+                      stepKhz: p.stepKhz,
+                      avgIndex: p.avgIndex,
+                      continuous: v,
+                    ),
+                  ),
+          title: const Text(
+            'Continuous (repeat the sweep until Stop)',
+            style: TextStyle(fontSize: 12),
+          ),
+          contentPadding: EdgeInsets.zero,
+        ),
+
+        if (!p.valid)
+          Text(
+            'Span / step gives ${p.points} points; at most 1000 are possible.',
+            style: const TextStyle(fontSize: 11, color: fallColor),
+          ),
+
+        Text(
+          switch (st?.state) {
+            1 => 'Measuring · sweep ${(st?.sweeps ?? 0) + 1}',
+            2 => 'Restarting the reader…',
+            _ => 'Reader running',
+          },
+          style: TextStyle(
+            fontSize: 12,
+            color: measuring ? traceColor : const Color(0xFF65728A),
+          ),
+        ),
+
+        if (measuring)
+          LinearProgressIndicator(
+            value: ((c.qTrace?.amps.length ?? 0) /
+                    (c.qRunParams?.points ?? 1))
+                .clamp(0, 1)
+                .toDouble(),
+            color: traceColor,
+          ),
+
+        if (c.qMessage != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text(
+              c.qMessage!,
+              style: const TextStyle(
+                fontSize: 11,
+                color: Color(0xFF65728A),
+              ),
+            ),
+          ),
+
+        if (st != null && st.error != 0)
+          Text(
+            'Last error 0x${st.error.toRadixString(16).padLeft(4, '0')} '
+            '(ADC clipping: lower the amplitude / check the antenna)',
+            style: const TextStyle(fontSize: 11, color: fallColor),
+          ),
+
+        SizedBox(
+          height: 260,
+          child: CustomPaint(
+            painter: QChartPainter(
+              c.qKept + [if (c.qTrace != null) c.qTrace!],
+              c.qResult,
+              c.qRunParams ?? c.qParams,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                children: [
+                  _detail(
+                    'Center',
+                    c.qResult == null ? '-' : _mhz(c.qResult!.resHz),
+                  ),
+                  _detail(
+                    'Upper corner',
+                    c.qResult == null ? '-' : _mhz(c.qResult!.upHz),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Column(
+                children: [
+                  _detail(
+                    'Lower corner',
+                    c.qResult == null ? '-' : _mhz(c.qResult!.lowHz),
+                  ),
+                  _detail(
+                    'Q-factor',
+                    c.qResult == null
+                        ? '-'
+                        : c.qResult!.q.toStringAsFixed(2),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+
+        const Text(
+          'Starting a measurement stops the card reader and switches its RF '
+          'field off. When you stop it, the field is switched off again and '
+          'the reader restarts automatically.',
+          style: TextStyle(fontSize: 10, color: Color(0xFF65728A)),
+        ),
+      ],
+    );
+  }
+
+  Widget _qPick(
+    String label,
+    int value,
+    List<int> values,
+    bool running,
+    ValueChanged<int> cb, {
+    String Function(int)? display,
+  }) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 9,
+              color: Color(0xFF65728A),
+            ),
+          ),
+          DropdownButton<int>(
+            value: values.contains(value) ? value : values.first,
+            onChanged: running
+                ? null
+                : (v) {
+                    if (v != null) cb(v);
+                  },
+            items: [
+              for (final v in values)
+                DropdownMenuItem(
+                  value: v,
+                  child: Text(
+                    display?.call(v) ?? '$v kHz',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      );
+
+  String _mhz(int hz) =>
+      hz == 0 ? '-' : '${(hz / 1e6).toStringAsFixed(3)} MHz';
+}
+
+class QChartPainter extends CustomPainter {
+  final List<QTrace> traces;
+  final QResult? result;
+  final QParams p;
+
+  QChartPainter(this.traces, this.result, this.p);
+
+  double _db(int amp) =>
+      20.0 * math.log(math.max(amp, 1) / 1000.0) / math.ln10;
+
+  double _niceStep(double raw) {
+    final e = (math.log(raw) / math.ln10).floorToDouble();
+    final pow = math.pow(10.0, e).toDouble();
+    final f = raw / pow;
+    final nf = f <= 1.0
+        ? 1.0
+        : f <= 2.0
+            ? 2.0
+            : f <= 2.5
+                ? 2.5
+                : f <= 5.0
+                    ? 5.0
+                    : 10.0;
+    return nf * pow;
+  }
+
+  @override
+  void paint(Canvas c, Size s) {
+    final left = 40.0;
+    final right = 10.0;
+    final top = 8.0;
+    final bottom = 24.0;
+    final w = s.width - left - right;
+    final h = s.height - top - bottom;
+    if (w <= 0 || h <= 0) return;
+
+    final xMin = p.startHz.toDouble();
+    final xMax = (p.startHz + p.spanKhz * 1000).toDouble();
+
+    final dbs = traces
+        .expand((t) => t.amps)
+        .map(_db)
+        .toList();
+
+    var yLo = dbs.isEmpty
+        ? -40.0
+        : ((dbs.reduce(math.min) - 1.0) / 2.0).floor() * 2.0;
+    var yHi = dbs.isEmpty
+        ? -10.0
+        : ((dbs.reduce(math.max) + 1.0) / 2.0).ceil() * 2.0;
+
+    if (yHi - yLo < 10.0) {
+      yHi = yHi.ceilToDouble();
+      yLo = yHi - 10.0;
+    }
+
+    final yStep = (yHi - yLo) <= 20
+        ? 2.0
+        : (yHi - yLo) <= 50
+            ? 5.0
+            : 10.0;
+
+    yLo = (yLo / yStep).floor() * yStep;
+    yHi = (yHi / yStep).ceil() * yStep;
+
+    double xOf(double hz) =>
+        left + w * (hz - xMin) / (xMax - xMin);
+
+    double yOf(double db) =>
+        top + h * (1.0 - ((db - yLo) / (yHi - yLo)).clamp(0.0, 1.0));
+
+    final grid = Paint()
+      ..color = const Color(0xFFD7DFEA)
+      ..strokeWidth = 1;
+
+    // Horizontal grid + dB labels.
+    for (var db = yLo; db <= yHi + .001; db += yStep) {
+      final y = yOf(db);
+      c.drawLine(Offset(left, y), Offset(left + w, y), grid);
+      _paintText(
+        c,
+        db.toStringAsFixed(0),
+        Offset(8, y - 6),
+        const Color(0xFF65728A),
+        10,
+      );
+    }
+    _paintText(
+      c,
+      'dB',
+      const Offset(2, 0),
+      const Color(0xFF65728A),
+      10,
+    );
+
+    // Vertical grid + MHz labels.
+    final xStepHz = _niceStep((xMax - xMin) / 6.0);
+    var fx = (xMin / xStepHz).ceil() * xStepHz;
+    while (fx <= xMax + 1.0) {
+      final x = xOf(fx);
+      c.drawLine(Offset(x, top), Offset(x, top + h), grid);
+      _paintText(
+        c,
+        (fx / 1e6).toStringAsFixed(2),
+        Offset((x - 18).clamp(0.0, s.width - 42), top + h + 4),
+        const Color(0xFF65728A),
+        9,
+      );
+      fx += xStepHz;
+    }
+
+    // Older sweeps faded, current sweep full opacity.
+    for (var ti = 0; ti < traces.length; ti++) {
+      final t = traces[ti];
+      if (t.amps.length < 2) continue;
+
+      final path = Path();
+      for (var i = 0; i < t.amps.length; i++) {
+        final x = xOf(t.startHz + i * t.stepHz.toDouble());
+        final y = yOf(_db(t.amps[i]));
+        if (i == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
+      }
+
+      final current = ti == traces.length - 1;
+      c.drawPath(
+        path,
+        Paint()
+          ..color = traceColor.withOpacity(current ? 1.0 : .30)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = current ? 2.0 : 1.2
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round,
+      );
+    }
+
+    // Center and -3 dB corners.
+    final r = result;
+    final cur = traces.isEmpty ? null : traces.last;
+    if (r != null && cur != null) {
+      void mark(int hz, String name, int row) {
+        if (hz == 0) return;
+        final x = xOf(hz.toDouble());
+        c.drawLine(
+          Offset(x, top),
+          Offset(x, top + h),
+          Paint()
+            ..color = markColor.withOpacity(.6)
+            ..strokeWidth = 1,
+        );
+
+        final idx = ((hz - cur.startHz) / cur.stepHz).toInt();
+        if (idx >= 0 && idx < cur.amps.length) {
+          c.drawCircle(
+            Offset(x, yOf(_db(cur.amps[idx]))),
+            4,
+            Paint()..color = markColor,
+          );
+        }
+
+        _paintText(
+          c,
+          '$name ${(hz / 1e6).toStringAsFixed(3)}',
+          Offset(
+            (x - 34).clamp(left, left + w - 82),
+            top + 2 + row * 11,
+          ),
+          traceColor,
+          9,
+        );
+      }
+
+      mark(r.resHz, 'Center', 0);
+      mark(r.lowHz, 'Lower', 1);
+      mark(r.upHz, 'Upper', 2);
+    }
+
+    if (traces.isEmpty) {
+      _paintText(
+        c,
+        'press Start to measure',
+        Offset(left + w / 2 - 60, top + h / 2),
+        const Color(0xFF65728A),
+        12,
+      );
+    }
+  }
+
+  void _paintText(
+    Canvas c,
+    String text,
+    Offset offset,
+    Color color,
+    double fontSize,
+  ) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(fontSize: fontSize, color: color),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(c, offset);
+  }
+
+  @override
+  bool shouldRepaint(covariant QChartPainter oldDelegate) => true;
+}
 
 // =============================================================================
 // OEM
