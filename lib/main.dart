@@ -82,6 +82,24 @@ class AppUuids {
 }
 
 String normUuid(Object value) => value.toString().toLowerCase();
+
+String canonicalBleUuid(Object value) {
+  var u = value.toString().toLowerCase().trim();
+  u = u.replaceAll('{', '').replaceAll('}', '');
+
+  // CoreBluetooth may expose SIG UUIDs as 16-bit (180f / 2a19),
+  // 32-bit (0000180f / 00002a19), or the full Bluetooth base UUID.
+  if (RegExp(r'^[0-9a-f]{4}$').hasMatch(u)) {
+    return '0000$u-0000-1000-8000-00805f9b34fb';
+  }
+  if (RegExp(r'^[0-9a-f]{8}$').hasMatch(u)) {
+    return '$u-0000-1000-8000-00805f9b34fb';
+  }
+  return u;
+}
+
+bool sameBleUuid(Object a, Object b) =>
+    canonicalBleUuid(a) == canonicalBleUuid(b);
 int u16(List<int> b, int i) => b[i] | (b[i + 1] << 8);
 int u32(List<int> b, int i) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24);
 String hexBytes(List<int> data, {int max = 128}) => data.take(max).map((e) => e.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
@@ -584,6 +602,7 @@ class BleController extends ChangeNotifier {
   SystemStatus? systemStatus;
   final List<StatusSample> statusHistory = [];
   int reads = 0, notifications = 0, failedReads = 0;
+  bool _batteryReadInProgress = false;
   bool gotBattery = false, gotStatus = false, expectBattery = false, expectStatus = false;
 
   CardInfo? card;
@@ -757,7 +776,7 @@ class BleController extends ChangeNotifier {
   }
 
   void _resetSessionData() {
-    batteryPercent = null; batteryHistory.clear(); systemStatus = null; statusHistory.clear(); gotBattery = false; gotStatus = false; expectBattery = false; expectStatus = false;
+    batteryPercent = null; batteryHistory.clear(); _batteryReadInProgress = false; systemStatus = null; statusHistory.clear(); gotBattery = false; gotStatus = false; expectBattery = false; expectStatus = false;
     reads = 0; notifications = 0; failedReads = 0; services = [];
     card = null; exchanges.clear(); cardService = false;
     pollService = false; pollStatus = null; pollActive = null; pollDraft = null; pollMessage = null; pollBusy = false;
@@ -767,21 +786,40 @@ class BleController extends ChangeNotifier {
     events.clear();
   }
 
-  DiscoveredCharacteristic? _findChar(String svc, String chr) {
+  DiscoveredService? _findService(String svc) {
     for (final s in services) {
-      if (normUuid(s.serviceId) != svc) continue;
-      for (final c in s.characteristics) {
-        if (normUuid(c.characteristicId) == chr) return c;
-      }
+      if (sameBleUuid(s.serviceId, svc)) return s;
+    }
+    return null;
+  }
+
+  DiscoveredCharacteristic? _findChar(String svc, String chr) {
+    final service = _findService(svc);
+    if (service == null) return null;
+
+    for (final c in service.characteristics) {
+      if (sameBleUuid(c.characteristicId, chr)) return c;
     }
     return null;
   }
 
   QualifiedCharacteristic? _q(String svc, String chr) {
     final id = connectedId;
-    final c = _findChar(svc, chr);
-    if (id == null || c == null) return null;
-    return QualifiedCharacteristic(deviceId: id, serviceId: Uuid.parse(svc), characteristicId: c.characteristicId);
+    final service = _findService(svc);
+    if (id == null || service == null) return null;
+
+    for (final c in service.characteristics) {
+      if (sameBleUuid(c.characteristicId, chr)) {
+        // Important for iOS: use the UUIDs returned by CoreBluetooth during
+        // discovery instead of rebuilding the standard SIG UUID ourselves.
+        return QualifiedCharacteristic(
+          deviceId: id,
+          serviceId: service.serviceId,
+          characteristicId: c.characteristicId,
+        );
+      }
+    }
+    return null;
   }
 
   Future<List<int>?> _read(String svc, String chr, {int tries = 1}) async {
@@ -880,14 +918,50 @@ class BleController extends ChangeNotifier {
         if (op != null) _handleOemParams(op);
       }
 
-      final batt = _findChar(AppUuids.batteryService, AppUuids.batteryLevel);
+      final batt = _findChar(
+        AppUuids.batteryService,
+        AppUuids.batteryLevel,
+      );
       if (batt != null) {
         expectBattery = true;
-        _subscribe(AppUuids.batteryService, AppUuids.batteryLevel, (b) => _handleBattery(b, true));
-        final v = await _read(AppUuids.batteryService, AppUuids.batteryLevel, tries: 3);
-        if (v != null) _handleBattery(v, false);
+
+        // Same data source as Android: standard Battery Service 0x180F /
+        // Battery Level 0x2A19. No VDBAT-derived fallback is used here.
+        _subscribe(
+          AppUuids.batteryService,
+          AppUuids.batteryLevel,
+          (b) => _handleBattery(b, true),
+        );
+
+        final v = await _read(
+          AppUuids.batteryService,
+          AppUuids.batteryLevel,
+          tries: 3,
+        );
+        if (v != null && v.isNotEmpty) {
+          _handleBattery(v, false);
+          log(
+            'Battery Level read: ${v.first.clamp(0, 100)}%',
+            LogArea.ble,
+          );
+        } else {
+          log(
+            'Battery Level characteristic found, initial read returned no data',
+            LogArea.ble,
+            kind: LogKind.warn,
+          );
+        }
       } else {
-        error = 'Battery service not found on device';
+        final sigServices = services
+            .map((s) => canonicalBleUuid(s.serviceId))
+            .where((u) => u.startsWith('0000'))
+            .join(', ');
+        log(
+          'Battery Service 0x180F / Battery Level 0x2A19 not found. '
+          'Discovered SIG services: $sigServices',
+          LogArea.ble,
+          kind: LogKind.warn,
+        );
       }
 
       _readyTimer?.cancel();
@@ -917,8 +991,23 @@ class BleController extends ChangeNotifier {
 
   Future<void> _periodic() async {
     if (connState != AppConnState.connected) return;
-    final b = await _read(AppUuids.batteryService, AppUuids.batteryLevel);
-    if (b != null) _handleBattery(b, false);
+
+    if (!_batteryReadInProgress &&
+        _findChar(AppUuids.batteryService, AppUuids.batteryLevel) != null) {
+      _batteryReadInProgress = true;
+      try {
+        final b = await _read(
+          AppUuids.batteryService,
+          AppUuids.batteryLevel,
+        );
+        if (b != null && b.isNotEmpty) {
+          _handleBattery(b, false);
+        }
+      } finally {
+        _batteryReadInProgress = false;
+      }
+    }
+
     if (rssiMonitoring && connectedId != null) {
       try {
         final raw = await ble.readRssi(connectedId!);
