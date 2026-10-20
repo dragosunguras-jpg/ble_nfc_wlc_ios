@@ -98,6 +98,178 @@ class StatusSample {
   const StatusSample(this.time, this.status);
 }
 
+
+class EstimatedLevel {
+  final DateTime time;
+  final double percent;
+  final bool disturbed;
+  const EstimatedLevel(this.time, this.percent, this.disturbed);
+}
+
+class BatteryEstimator {
+  static const int spikeMv = 150;
+  static const int baselineSamples = 15;
+  static const int settleSamples = 2;
+  static const double rIntOhm = 0.15;
+  static const double smoothing = 0.25;
+
+  static const int etaWindowMs = 3 * 60 * 1000;
+  static const int etaMinSpanMs = 30 * 1000;
+  static const double minRatePctPerMin = 0.02;
+  static const double defaultCcPctPerMin = 1.0;
+  static const double defaultCvStartPct = 90.0;
+  static const double trickleEndPct = 5.0;
+  static const double trickleRateFraction = 0.2;
+  static const double fullPct = 99.0;
+
+  static const List<(int, double)> ocv = [
+    (3270, 0), (3610, 5), (3690, 10), (3710, 15), (3730, 20),
+    (3750, 25), (3770, 30), (3790, 35), (3800, 40), (3820, 45),
+    (3840, 50), (3850, 55), (3870, 60), (3910, 65), (3950, 70),
+    (3980, 75), (4020, 80), (4080, 85), (4110, 90), (4150, 95),
+    (4200, 100),
+  ];
+
+  static double levelFromOcv(double mv) {
+    if (mv <= ocv.first.$1) return 0;
+    if (mv >= ocv.last.$1) return 100;
+    for (var i = 1; i < ocv.length; i++) {
+      final (v1, p1) = ocv[i];
+      if (mv <= v1) {
+        final (v0, p0) = ocv[i - 1];
+        return p0 + (p1 - p0) * (mv - v0) / (v1 - v0);
+      }
+    }
+    return 100;
+  }
+
+  static List<EstimatedLevel> estimate(List<StatusSample> history) {
+    final out = <EstimatedLevel>[];
+    final vddcWindow = <int>[];
+    var settle = 0;
+    double? goodMv;
+    double? level;
+
+    for (final sample in history) {
+      final s = sample.status;
+      final baseline = vddcWindow.length >= 3
+          ? ([...vddcWindow]..sort())[vddcWindow.length ~/ 2]
+          : s.vddcMv;
+
+      if (s.vddcMv - baseline > spikeMv) settle = settleSamples + 1;
+      final disturbed = settle > 0;
+      if (disturbed) settle--;
+
+      vddcWindow.add(s.vddcMv);
+      if (vddcWindow.length > baselineSamples) vddcWindow.removeAt(0);
+
+      if (!disturbed || goodMv == null) {
+        final ir = s.charging ? (s.estCurrentMa ?? 0) * rIntOhm : 0.0;
+        goodMv = s.vdBatMv - ir;
+      }
+
+      final raw = levelFromOcv(goodMv);
+      var next = level == null ? raw : level + (raw - level) * smoothing;
+      if (level != null) {
+        next = s.charging ? math.max(next, level) : math.min(next, level);
+      }
+      level = next;
+      out.add(EstimatedLevel(sample.time, next, disturbed));
+    }
+    return out;
+  }
+
+  static Duration? etaToFull(
+      List<StatusSample> history, List<EstimatedLevel> est) {
+    if (history.isEmpty || history.length != est.length) return null;
+    final lastIdx = history.length - 1;
+    final last = history[lastIdx].status;
+    if (!last.charging) return null;
+
+    final level = est[lastIdx].percent;
+    if (level >= fullPct) return Duration.zero;
+    final phase = last.chargerStatus;
+
+    var session = lastIdx;
+    while (session > 0 && history[session - 1].status.charging) {
+      session--;
+    }
+
+    var from = lastIdx;
+    while (from > session &&
+        history[from - 1].status.chargerStatus == phase &&
+        history[lastIdx]
+                .time
+                .difference(history[from - 1].time)
+                .inMilliseconds <=
+            etaWindowMs) {
+      from--;
+    }
+
+    final spanMs =
+        history[lastIdx].time.difference(history[from].time).inMilliseconds;
+    final measured = spanMs >= etaMinSpanMs
+        ? (level - est[from].percent) / (spanMs / 60000.0)
+        : 0.0;
+    final slope = measured > minRatePctPerMin ? measured : null;
+
+    int? cvIdx;
+    for (var i = session; i <= lastIdx; i++) {
+      if (history[i].status.chargerStatus == 3) {
+        cvIdx = i;
+        break;
+      }
+    }
+
+    final cvStart =
+        (cvIdx == null ? defaultCvStartPct : est[cvIdx].percent)
+            .clamp(50.0, 98.0);
+
+    double cvMin(double l, double k) =>
+        math.log((100.0 - l) / (100.0 - fullPct)) / k;
+
+    final ccRate =
+        phase == 2 ? (slope ?? defaultCcPctPerMin) : defaultCcPctPerMin;
+    final k0 = ccRate / (100.0 - cvStart);
+
+    late final double minutes;
+    if (phase == 3) {
+      final k = slope == null ? k0 : slope / (100.0 - level);
+      minutes = cvMin(level, k);
+    } else if (phase == 2) {
+      minutes = level >= cvStart
+          ? cvMin(level, k0)
+          : (cvStart - level) / ccRate + cvMin(cvStart, k0);
+    } else {
+      final trickle =
+          math.max(0.0, trickleEndPct - level) /
+              (defaultCcPctPerMin * trickleRateFraction);
+      final from2 = math.max(level, trickleEndPct);
+      minutes =
+          trickle + (cvStart - from2) / ccRate + cvMin(cvStart, k0);
+    }
+
+    return Duration(
+      milliseconds: (math.max(0.0, minutes) * 60000).round(),
+    );
+  }
+}
+
+String formatEta(Duration d) {
+  final min = (d.inMilliseconds / 60000.0).round();
+  if (min < 1) return '<1 min';
+  if (min < 60) return '~$min min';
+  return '~${min ~/ 60} h ${(min % 60).toString().padLeft(2, '0')} min';
+}
+
+String shortPhaseName(int kind) => switch (kind) {
+      1 => 'Trickle',
+      2 => 'CC',
+      3 => 'CV',
+      4 => 'Done',
+      _ => '',
+    };
+
 class RssiSample {
   final DateTime time;
   final int raw;
@@ -1237,13 +1409,295 @@ class _WlcStatus extends StatelessWidget { final BleController c; const _WlcStat
 Widget _detail(String a,String b)=>Padding(padding:const EdgeInsets.symmetric(vertical:5),child:Row(children:[Expanded(flex:4,child:Text(a,style:const TextStyle(color:Color(0xFF65728A)))),Expanded(flex:6,child:Text(b))]));
 String serviceName(String u)=>u.startsWith('00001800')?'Generic Access':u.startsWith('00001801')?'Generic Attribute':u.startsWith('0000180f')?'Battery Service':u.startsWith('5a1f0001')?'System Status (custom)':u.startsWith('5a1f0010')?'Card Reader (custom)':u.startsWith('5a1f0020')?'OEM Config (custom)':u.startsWith('5a1f0030')?'PSL / Q measurement (custom)':u.startsWith('5a1f0040')?'Polling settings (custom)':u.startsWith('2e130421')?'Smart lock control (demo)':'Service';
 
-class BatteryGraph extends StatefulWidget { final BleController c; const BatteryGraph({super.key,required this.c}); @override State<BatteryGraph> createState()=>_BatteryGraphState(); }
-class _BatteryGraphState extends State<BatteryGraph> {
-  bool showBatt=true,showVbat=true,showVddc=true,showPower=false;
-  @override Widget build(BuildContext context){final c=widget.c;final s=c.systemStatus;return ListView(children:[Row(children:[Text('${c.batteryPercent??'--'}%',style:TextStyle(fontSize:28,color:(c.batteryPercent??100)<=20?Colors.red:Theme.of(context).colorScheme.onSurface)),const SizedBox(width:16),Expanded(child:Text(s?.charging==true?'Charging · ${s!.chargerStatus==2?'CC':s.chargerStatus==3?'CV':'TC'}':'Not charging',style:const TextStyle(color:riseColor,fontSize:16))),Container(padding:const EdgeInsets.symmetric(horizontal:16,vertical:10),decoration:BoxDecoration(color:Colors.green.shade600,borderRadius:BorderRadius.circular(24)),child:const Text('• LIVE',style:TextStyle(color:Colors.white,fontWeight:FontWeight.w700)))]),const SizedBox(height:14),SingleChildScrollView(scrollDirection:Axis.horizontal,child:Row(children:[_seriesChip('●  Battery [%]',showBatt,Colors.green,()=>setState(()=>showBatt=!showBatt)),_seriesChip('●  VDBAT [V]',showVbat,Colors.deepPurple,()=>setState(()=>showVbat=!showVbat)),_seriesChip('●  VDDC [V]',showVddc,Colors.deepOrange,()=>setState(()=>showVddc=!showVddc)),_seriesChip('●  Power [mW]',showPower,Colors.teal,()=>setState(()=>showPower=!showPower))])),const SizedBox(height:10),const Row(children:[_Legend(Colors.amber,'Trickle'),SizedBox(width:12),_Legend(Colors.lightBlue,'CC'),SizedBox(width:12),_Legend(Colors.purpleAccent,'CV'),SizedBox(width:12),_Legend(Color(0xFF9ACCA7),'Done')]),const SizedBox(height:8),if(showBatt)SizedBox(height:130,child:SimpleHistoryChart(samples:c.statusHistory,battery:c.batteryHistory,kind:0)),if(showVbat)SizedBox(height:130,child:SimpleHistoryChart(samples:c.statusHistory,battery:c.batteryHistory,kind:1)),if(showVddc)SizedBox(height:130,child:SimpleHistoryChart(samples:c.statusHistory,battery:c.batteryHistory,kind:2)),if(showPower)SizedBox(height:130,child:SimpleHistoryChart(samples:c.statusHistory,battery:c.batteryHistory,kind:3)),const Padding(padding:EdgeInsets.only(top:12),child:Text('Drag to scroll · pinch to zoom · tap a point for details',style:TextStyle(fontSize:12,color:Color(0xFF65728A))))]);}
-  Widget _seriesChip(String text,bool on,Color c,VoidCallback f)=>Padding(padding:const EdgeInsets.only(right:8),child:FilterChip(selected:on,onSelected:(_)=>f(),label:Text(text),selectedColor:const Color(0xFFDDE5F8),labelStyle:TextStyle(color:on?const Color(0xFF1D2940):Colors.grey)));
+class BatteryGraph extends StatefulWidget {
+  final BleController c;
+  const BatteryGraph({super.key, required this.c});
+
+  @override
+  State<BatteryGraph> createState() => _BatteryGraphState();
 }
-class _Legend extends StatelessWidget{final Color color;final String text;const _Legend(this.color,this.text);@override Widget build(BuildContext context)=>Row(children:[Container(width:12,height:12,color:color.withOpacity(.65)),const SizedBox(width:4),Text(text,style:const TextStyle(fontSize:12))]);}
+
+class _BatteryGraphState extends State<BatteryGraph> {
+  bool showBatt = true;
+  bool showVbat = true;
+  bool showVddc = true;
+  bool showPower = false;
+  bool showPhases = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.c;
+    final s = c.systemStatus;
+
+    final estimate = BatteryEstimator.estimate(c.statusHistory);
+    final estNow = estimate.isEmpty ? null : estimate.last.percent.round();
+    final eta = BatteryEstimator.etaToFull(c.statusHistory, estimate);
+
+    String stateText;
+    Color? stateColor;
+    if (c.batteryHistory.isEmpty && s == null) {
+      stateText = 'Waiting for data…';
+      stateColor = null;
+    } else if (s?.charging == true) {
+      stateText =
+          'Charging · ${shortPhaseName(s!.chargerStatus)}'
+          '${eta == null ? '' : ' · full in ${formatEta(eta)}'}';
+      stateColor = riseColor;
+    } else if (s?.rfFieldDetected == true && s?.chargerStatus == 4) {
+      stateText = 'Charged (done)';
+      stateColor = riseColor;
+    } else if (c.batteryHistory.length < 2) {
+      stateText = 'Collecting data…';
+      stateColor = null;
+    } else {
+      final last = c.batteryHistory.last;
+      BatterySample first = c.batteryHistory.first;
+      for (final h in c.batteryHistory.reversed) {
+        if (last.time.difference(h.time).inMinutes <= 5) {
+          first = h;
+        } else {
+          break;
+        }
+      }
+      final dtMin =
+          last.time.difference(first.time).inMilliseconds / 60000.0;
+      final rate = dtMin < .5 ? null : (last.percent - first.percent) / dtMin;
+      if (rate != null && rate < -0.05) {
+        stateText = 'Discharging  ${rate.toStringAsFixed(1)} %/min';
+        stateColor = fallColor;
+      } else {
+        stateText = rate == null ? 'Collecting data…' : 'Stable';
+        stateColor = null;
+      }
+    }
+
+    return ListView(
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(
+              '${c.batteryPercent ?? '--'}%',
+              style: TextStyle(
+                fontSize: 28,
+                color: batteryDisplayColor(c.batteryPercent),
+              ),
+              maxLines: 1,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                stateText,
+                maxLines: 2,
+                style: TextStyle(
+                  color: stateColor ??
+                      Theme.of(context).colorScheme.onSurface,
+                  fontSize: 14,
+                ),
+              ),
+            ),
+            if (estNow != null) ...[
+              const SizedBox(width: 8),
+              Text(
+                'Est. $estNow%',
+                style: const TextStyle(
+                  color: Color(0xFFE6A21A),
+                  fontSize: 16,
+                ),
+                maxLines: 1,
+              ),
+            ],
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 9,
+              ),
+              decoration: BoxDecoration(
+                color: riseColor,
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: const Text(
+                '● LIVE',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _seriesChip(
+                'Battery [%]',
+                showBatt,
+                const Color(0xFF388E3C),
+                () => setState(() => showBatt = !showBatt),
+              ),
+              _seriesChip(
+                'VDBAT [V]',
+                showVbat,
+                const Color(0xFF7E57C2),
+                () => setState(() => showVbat = !showVbat),
+              ),
+              _seriesChip(
+                'VDDC [V]',
+                showVddc,
+                const Color(0xFFEF6C00),
+                () => setState(() => showVddc = !showVddc),
+              ),
+              _seriesChip(
+                'Power [mW]',
+                showPower,
+                const Color(0xFF00897B),
+                () => setState(() => showPower = !showPower),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: FilterChip(
+                  selected: showPhases,
+                  onSelected: (_) =>
+                      setState(() => showPhases = !showPhases),
+                  label: const Text(
+                    'Charger phases',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (showPhases)
+          const Row(
+            children: [
+              _Legend(Color(0xFFFFA000), 'Trickle'),
+              SizedBox(width: 12),
+              _Legend(Color(0xFF1E88E5), 'CC'),
+              SizedBox(width: 12),
+              _Legend(Color(0xFF8E24AA), 'CV'),
+              SizedBox(width: 12),
+              _Legend(Color(0xFF43A047), 'Done'),
+            ],
+          ),
+        const SizedBox(height: 8),
+        if (showBatt)
+          SizedBox(
+            height: 130,
+            child: SimpleHistoryChart(
+              samples: c.statusHistory,
+              battery: c.batteryHistory,
+              kind: 0,
+            ),
+          ),
+        if (showVbat)
+          SizedBox(
+            height: 130,
+            child: SimpleHistoryChart(
+              samples: c.statusHistory,
+              battery: c.batteryHistory,
+              kind: 1,
+            ),
+          ),
+        if (showVddc)
+          SizedBox(
+            height: 130,
+            child: SimpleHistoryChart(
+              samples: c.statusHistory,
+              battery: c.batteryHistory,
+              kind: 2,
+            ),
+          ),
+        if (showPower)
+          SizedBox(
+            height: 130,
+            child: SimpleHistoryChart(
+              samples: c.statusHistory,
+              battery: c.batteryHistory,
+              kind: 3,
+            ),
+          ),
+        const Padding(
+          padding: EdgeInsets.only(top: 12),
+          child: Text(
+            'Drag to scroll · pinch to zoom · tap a point for details',
+            style: TextStyle(
+              fontSize: 12,
+              color: Color(0xFF65728A),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _seriesChip(
+    String text,
+    bool on,
+    Color color,
+    VoidCallback toggle,
+  ) =>
+      Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: FilterChip(
+          selected: on,
+          onSelected: (_) => toggle(),
+          selectedColor: const Color(0xFFDDE5F8),
+          avatar: Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+            ),
+          ),
+          label: Text(
+            text,
+            style: TextStyle(
+              color: on
+                  ? const Color(0xFF1D2940)
+                  : Colors.grey,
+              fontSize: 12,
+            ),
+          ),
+        ),
+      );
+}
+
+Color batteryDisplayColor(int? percent) {
+  if (percent == null) return Colors.grey;
+  if (percent <= 20) return const Color(0xFFD32F2F);
+  if (percent <= 50) return const Color(0xFFFBC02D);
+  return const Color(0xFF388E3C);
+}
+
+class _Legend extends StatelessWidget {
+  final Color color;
+  final String text;
+
+  const _Legend(this.color, this.text);
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          Container(
+            width: 10,
+            height: 10,
+            color: color.withOpacity(.5),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: const TextStyle(fontSize: 11),
+          ),
+        ],
+      );
+}
+
 class SimpleHistoryChart extends StatelessWidget {final List<StatusSample> samples;final List<BatterySample> battery;final int kind;const SimpleHistoryChart({super.key,required this.samples,required this.battery,required this.kind});@override Widget build(BuildContext context)=>CustomPaint(painter:_HistoryPainter(samples,battery,kind),child:Container());}
 class _HistoryPainter extends CustomPainter {final List<StatusSample>s;final List<BatterySample>b;final int kind;_HistoryPainter(this.s,this.b,this.kind);@override void paint(Canvas c,Size z){final grid=Paint()..color=const Color(0xFFD5DDE9)..strokeWidth=1;for(var i=0;i<=4;i++){final y=8+(z.height-24)*i/4;c.drawLine(Offset(42,y),Offset(z.width-8,y),grid);}for(var i=0;i<=4;i++){final x=42+(z.width-50)*i/4;c.drawLine(Offset(x,8),Offset(x,z.height-16),grid);}List<double> v=[];Color col;String label;if(kind==0){v=b.map((e)=>e.percent.toDouble()).toList();col=Colors.green;label='Battery';}else if(kind==1){v=s.map((e)=>e.status.vdBatMv/1000).toList();col=Colors.deepPurple;label='VDBAT';}else if(kind==2){v=s.map((e)=>e.status.vddcMv/1000).toList();col=Colors.deepOrange;label='VDDC';}else{v=s.map((e)=>(e.status.estPowerMw??0).toDouble()).toList();col=Colors.teal;label='Power';}if(v.isEmpty){_txt(c,'$label --',Offset(48,12),col);return;}double lo=kind==0?0:v.reduce(math.min),hi=kind==0?100:v.reduce(math.max);if((hi-lo).abs()<.01){lo-=.1;hi+=.1;}final path=Path();for(var i=0;i<v.length;i++){final x=42+(z.width-50)*(i/math.max(1,v.length-1));final y=8+(z.height-24)*(1-(v[i]-lo)/(hi-lo));if(i==0)path.moveTo(x,y);else path.lineTo(x,y);}c.drawPath(path,Paint()..color=col..style=PaintingStyle.stroke..strokeWidth=3..strokeCap=StrokeCap.round);final last=v.last;_txt(c,'$label ${kind==0?last.toStringAsFixed(0):last.toStringAsFixed(2)}${kind==0?' %':kind==3?' mW':' V'}',Offset(48,12),col);}
 void _txt(Canvas c,String t,Offset o,Color col){final tp=TextPainter(text:TextSpan(text:t,style:TextStyle(fontSize:12,color:col)),textDirection:TextDirection.ltr)..layout();tp.paint(c,o);} @override bool shouldRepaint(covariant _HistoryPainter o)=>true;}
